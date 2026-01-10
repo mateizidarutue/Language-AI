@@ -1,0 +1,28 @@
+# ----------------------------
+# Python virtual environments
+# ----------------------------
+.venv/
+venv/
+env/
+
+# ----------------------------
+# Python cache / build files
+# ----------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ----------------------------
+# OS / editor junk
+# ----------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+
+# ----------------------------
+# Data & outputs (project-specific)
+# ----------------------------
+results_si/
+*.log
+
