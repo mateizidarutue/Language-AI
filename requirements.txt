@@ -1,8 +1,18 @@
 # Core scientific stack
-numpy==1.26.4
-pandas==2.2.2
-scikit-learn==1.5.1
-openpyxl==3.1.5
+numpy>=1.26.4
+pandas>=2.2.2
+scikit-learn>=1.5.1
+openpyxl>=3.1.5
 
-# fastText (mandatory) — use wheels to avoid compilation issues
-fasttext-wheel==0.9.2
+# fastText (wheel version for easier installation)
+fasttext-wheel>=0.9.2
+
+# NLP utilities (synonym substitution + progress bars)
+nltk
+tqdm
+
+# Transformers (paraphrasing + round-trip translation)
+transformers
+torch
+sentencepiece
+protobuf

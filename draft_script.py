@@ -26,11 +26,13 @@ HOW TO RUN (minimal)
 COMMON OPTIONS
     --run_paraphrase            Enable paraphrasing (requires `transformers`, `torch`)
     --run_translation           Enable round-trip translation (requires `transformers`, `torch`)
+    --device {auto,cpu,cuda}     Device for Transformers models
+    --batch_size N               Batch size for Transformers inference
+    --no_fp16                    Disable fp16 on CUDA
     --out_dir results
 
-Dependencies (minimal): pandas, numpy, scikit-learn, openpyxl, fasttext
+Dependencies (minimal): pandas, numpy, scikit-learn, openpyxl, fasttext, nltk
 Optional:
-  - nltk (WordNet): pip install nltk  (then python -c "import nltk; nltk.download('wordnet'); nltk.download('omw-1.4')")
   - transformers + torch for paraphrase/translation: pip install transformers torch sentencepiece
 
 NOTE: This is designed for a course project: reproducible, interpretable, and practical.
@@ -50,6 +52,13 @@ from sklearn.metrics import f1_score, accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+
+from text_utils import normalize_text
+from obfs.obfuscation_lexical import MBTI_RE, obfuscate_lexical_cue_removal
+from obfs.obfuscation_char_visual import obfuscate_char_visual
+from obfs.obfuscation_high_weight import require_wordnet, obfuscate_high_weight_substitution
+from obfs.obfuscation_paraphrase import paraphrase_transformers_batch
+from obfs.obfuscation_translation import roundtrip_translate_transformers_batch
 
 # -----------------------------
 # Reproducibility
@@ -138,117 +147,8 @@ def author_level_split(df: pd.DataFrame, seed: int = 42, train_size=0.8, dev_siz
     return SplitData(X_train, y_train, a_train, X_dev, y_dev, a_dev, X_test, y_test, a_test)
 
 # -----------------------------
-# Text preprocessing utilities
+# Feature utilities
 # -----------------------------
-_URL_RE = re.compile(r"https?://\S+|www\.\S+")
-_WS_RE = re.compile(r"\s+")
-
-def normalize_text(t: str) -> str:
-    t = _URL_RE.sub(" URL ", t)
-    t = t.replace("\u200b", "")  # zero-width space
-    t = _WS_RE.sub(" ", t).strip()
-    return t
-
-# -----------------------------
-# Obfuscation techniques
-# -----------------------------
-MBTI_TERMS = [
-    # obvious MBTI mentions / codes
-    r"\bmbti\b", r"\bmyers[- ]?briggs\b", r"\bpersonality\s*type\b",
-    r"\bintp\b", r"\bintj\b", r"\binfp\b", r"\binfj\b",
-    r"\bistp\b", r"\bistj\b", r"\bisfp\b", r"\bisfj\b",
-    r"\bentp\b", r"\bentj\b", r"\benfp\b", r"\benfj\b",
-    r"\bestp\b", r"\bestj\b", r"\besfp\b", r"\besfj\b",
-    # S/N jargon + cognitive functions
-    r"\bsensing\b", r"\bsensor(s)?\b", r"\bintuitive\b", r"\bintuition\b",
-    r"\bsi\b", r"\bse\b", r"\bni\b", r"\bne\b", r"\bti\b", r"\bte\b", r"\bfi\b", r"\bfe\b",
-    r"\bcognitive\s+function(s)?\b",
-    # phrases that often indicate self-identification
-    r"\b(as\s+an?|i\s+am)\s+(an?\s+)?(intuitive|sensor|sensing)\b",
-]
-MBTI_RE = re.compile("|".join(MBTI_TERMS), flags=re.IGNORECASE)
-
-def obfuscate_lexical_cue_removal(text: str) -> str:
-    """
-    Removes / neutralizes explicit MBTI + S/N self-identification cues.
-    This targets label leakage rather than deeper style.
-    """
-    t = text
-    t = MBTI_RE.sub(" [trait] ", t)
-    # Neutralize common “type mention” patterns like "I'm an INTP"
-    t = re.sub(r"\b(i\s*['a]m|i\s+am|as\s+an?)\s+(__)?label__?\w+\b", " [selfref] ", t, flags=re.I)
-    t = _WS_RE.sub(" ", t).strip()
-    return t
-
-# ---- Character/visual perturbations (Eger-style inspirations) ----
-HOMOGLYPHS = {
-    "a": ["\u0430", "\u03b1"],  # Cyrillic a, Greek alpha
-    "e": ["\u0435", "\u03b5"],  # Cyrillic e, Greek epsilon
-    "i": ["\u0456", "\u03b9"],  # Cyrillic i, Greek iota
-    "o": ["\u043e", "\u03bf"],  # Cyrillic o, Greek omicron
-    "c": ["\u0441"],            # Cyrillic es
-    "p": ["\u0440"],            # Cyrillic er
-    "x": ["\u0445"],            # Cyrillic ha
-    "y": ["\u0443"],            # Cyrillic u
-    "s": ["\u0455"],            # Cyrillic dze
-}
-
-DIACRITICS = {
-    "a": ["\u00e1", "\u00e0", "\u00e2", "\u00e4"],
-    "e": ["\u00e9", "\u00e8", "\u00ea", "\u00eb"],
-    "i": ["\u00ed", "\u00ec", "\u00ee", "\u00ef"],
-    "o": ["\u00f3", "\u00f2", "\u00f4", "\u00f6"],
-    "u": ["\u00fa", "\u00f9", "\u00fb", "\u00fc"],
-}
-
-def obfuscate_char_visual(
-    text: str,
-    homoglyph_rate: float = 0.02,
-    diacritic_rate: float = 0.01,
-    seed: int = 42
-) -> str:
-    rng = random.Random(seed)
-    chars = list(text)
-    for idx, ch in enumerate(chars):
-        low = ch.lower()
-        if low in HOMOGLYPHS and rng.random() < homoglyph_rate:
-            rep = rng.choice(HOMOGLYPHS[low])
-            chars[idx] = rep if ch.islower() else rep  # keep simple
-        elif low in DIACRITICS and rng.random() < diacritic_rate:
-            rep = rng.choice(DIACRITICS[low])
-            chars[idx] = rep if ch.islower() else rep
-    return "".join(chars)
-
-# ---- High-weight substitution (LR-driven) ----
-def try_wordnet_synonym(token: str) -> Optional[str]:
-    """
-    Best-effort synonym via WordNet (optional). If not available, return None.
-    """
-    try:
-        import nltk
-        from nltk.corpus import wordnet as wn
-    except Exception:
-        return None
-
-    # Token must be alphabetic and not too short
-    if not token.isalpha() or len(token) < 4:
-        return None
-
-    try:
-        synsets = wn.synsets(token)
-    except LookupError:
-        return None
-    if not synsets:
-        return None
-
-    # Pick a lemma that's not identical, prefer single-word lemmas
-    for ss in synsets[:3]:
-        for lemma in ss.lemmas()[:5]:
-            cand = lemma.name().replace("_", " ")
-            if cand.lower() != token.lower() and " " not in cand:
-                return cand
-    return None
-
 def build_lr_top_features(vectorizer: TfidfVectorizer, lr: LogisticRegression, top_k: int = 200) -> Tuple[List[str], List[str]]:
     """
     Returns top features for class 1 and class 0 (binary LR).
@@ -258,116 +158,6 @@ def build_lr_top_features(vectorizer: TfidfVectorizer, lr: LogisticRegression, t
     top_pos = feat_names[np.argsort(coef)[-top_k:]][::-1].tolist()  # strongest for class 1
     top_neg = feat_names[np.argsort(coef)[:top_k]].tolist()         # strongest for class 0
     return top_pos, top_neg
-
-def obfuscate_high_weight_substitution(
-    text: str,
-    sensitive_tokens: List[str],
-    substitute_mode: str = "synonym_then_neutral",
-    neutral_token: str = "neutral",
-    max_replacements: int = 30
-) -> str:
-    """
-    Replaces sensitive tokens found in text.
-    For practicality, we treat sensitive_tokens as word-level items (unigrams).
-    For n-grams with spaces, we do phrase replacement too.
-
-    substitute_mode:
-      - "synonym_then_neutral": try WordNet synonym, else replace with neutral_token
-      - "neutral": always neutral_token
-    """
-    t = text
-    replaced = 0
-
-    # Replace longer phrases first (n-grams)
-    phrases = sorted([s for s in sensitive_tokens if " " in s], key=len, reverse=True)
-    words = [s for s in sensitive_tokens if " " not in s]
-
-    for ph in phrases:
-        if replaced >= max_replacements:
-            break
-        pattern = re.compile(r"\b" + re.escape(ph) + r"\b", flags=re.IGNORECASE)
-        if pattern.search(t):
-            t = pattern.sub(neutral_token, t)
-            replaced += 1
-
-    # Word replacement
-    def repl_word(m: re.Match) -> str:
-        nonlocal replaced
-        if replaced >= max_replacements:
-            return m.group(0)
-        tok = m.group(0)
-        if substitute_mode == "neutral":
-            replaced += 1
-            return neutral_token
-        syn = try_wordnet_synonym(tok.lower())
-        replaced += 1
-        return syn if syn else neutral_token
-
-    if words and replaced < max_replacements:
-        # Compile one regex for all words (careful with length)
-        safe_words = [w for w in words if re.match(r"^[\w'-]+$", w)]
-        if safe_words:
-            pattern = re.compile(r"\b(" + "|".join(map(re.escape, safe_words[:5000])) + r")\b", flags=re.IGNORECASE)
-            t = pattern.sub(repl_word, t)
-
-    t = _WS_RE.sub(" ", t).strip()
-    return t
-
-# ---- Optional: Paraphrasing + Translation (Transformers) ----
-def paraphrase_transformers(text: str, model_name: str = "Vamsi/T5_Paraphrase_Paws", max_len: int = 256) -> str:
-    """
-    Optional paraphrase using Transformers (requires transformers + torch).
-    This is best-effort and may be slow. We paraphrase sentence-by-sentence lightly.
-    """
-    try:
-        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-        import torch
-    except Exception as e:
-        raise RuntimeError("Paraphrasing requires `transformers` + `torch`. Install them or disable --run_paraphrase.") from e
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-
-    # Keep it simple: paraphrase only the first chunk to control runtime
-    chunk = text[:1500]
-    prompt = f"paraphrase: {chunk} </s>"
-    enc = tokenizer([prompt], return_tensors="pt", truncation=True, max_length=max_len)
-    with torch.no_grad():
-        out = model.generate(
-            **enc,
-            max_length=max_len,
-            num_beams=5,
-            num_return_sequences=1,
-            temperature=1.0,
-            early_stopping=True
-        )
-    dec = tokenizer.decode(out[0], skip_special_tokens=True)
-    # If model outputs empty or too short, fall back
-    return dec if len(dec.strip()) > 20 else text
-
-def roundtrip_translate_transformers(text: str, src2tgt="Helsinki-NLP/opus-mt-en-de", tgt2src="Helsinki-NLP/opus-mt-de-en", max_len: int = 256) -> str:
-    """
-    Optional EN->DE->EN translation using MarianMT models (Transformers).
-    """
-    try:
-        from transformers import MarianTokenizer, MarianMTModel
-        import torch
-    except Exception as e:
-        raise RuntimeError("Translation requires `transformers` + `torch` + `sentencepiece`. Install them or disable --run_translation.") from e
-
-    def translate(t: str, model_name: str) -> str:
-        tok = MarianTokenizer.from_pretrained(model_name)
-        mod = MarianMTModel.from_pretrained(model_name)
-        # Translate only first chunk to keep runtime manageable
-        chunk = t[:1500]
-        enc = tok([chunk], return_tensors="pt", truncation=True, max_length=max_len)
-        with torch.no_grad():
-            out = mod.generate(**enc, max_length=max_len, num_beams=4, early_stopping=True)
-        return tok.decode(out[0], skip_special_tokens=True)
-
-    de = translate(text, src2tgt)
-    en = translate(de, tgt2src)
-    return en if len(en.strip()) > 20 else text
 
 # -----------------------------
 # Models: LR + fastText
@@ -451,7 +241,9 @@ def predict_fasttext(model: FastTextModel, X: List[str]) -> Tuple[np.ndarray, np
     probs = []
     for t in X:
         t = normalize_text(t)
-        labels, ps = model.ft.predict(t, k=2)
+        labels, ps = model.ft.predict([t], k=2)
+        labels = labels[0] if labels else []
+        ps = ps[0] if ps else []
         # labels like ["__label__1", "__label__0"], ps like [0.7, 0.3]
         # Extract probability for class 1
         p1 = 0.0
@@ -570,10 +362,26 @@ class ObfuscationConfig:
 def apply_obfuscations(
     texts: List[str],
     cfg: ObfuscationConfig,
-    sensitive_feats: Optional[List[str]] = None
+    sensitive_feats: Optional[List[str]] = None,
+    device: str = "auto",
+    desc: Optional[str] = None,
+    batch_size: int = 8,
+    paraphrase_max_len: int = 128,
+    paraphrase_beams: int = 2,
+    translation_max_len: int = 128,
+    translation_beams: int = 2,
+    fp16: bool = True
 ) -> List[str]:
     out = []
-    for i, t in enumerate(texts):
+    try:
+        from tqdm import tqdm
+        iterator = tqdm(texts, desc=desc or "obfuscating", total=len(texts))
+    except Exception:
+        iterator = texts
+        if desc:
+            print(f"Obfuscating {len(texts)} items for {desc}...")
+
+    for i, t in enumerate(iterator):
         x = normalize_text(t)
 
         if cfg.do_lexical_remove:
@@ -583,7 +391,7 @@ def apply_obfuscations(
             x = obfuscate_high_weight_substitution(
                 x,
                 sensitive_tokens=sensitive_feats,
-                substitute_mode="synonym_then_neutral",
+                substitute_mode="synonym_only",
                 neutral_token="neutral",
                 max_replacements=30
             )
@@ -596,13 +404,28 @@ def apply_obfuscations(
                 seed=cfg.seed + i
             )
 
-        if cfg.do_paraphrase:
-            x = paraphrase_transformers(x)
-
-        if cfg.do_translation:
-            x = roundtrip_translate_transformers(x)
-
         out.append(x)
+
+    if cfg.do_paraphrase:
+        out = paraphrase_transformers_batch(
+            out,
+            max_len=paraphrase_max_len,
+            batch_size=batch_size,
+            num_beams=paraphrase_beams,
+            device=device,
+            fp16=fp16
+        )
+
+    if cfg.do_translation:
+        out = roundtrip_translate_transformers_batch(
+            out,
+            max_len=translation_max_len,
+            batch_size=batch_size,
+            num_beams=translation_beams,
+            device=device,
+            fp16=fp16
+        )
+
     return out
 
 # -----------------------------
@@ -618,6 +441,14 @@ def main():
     parser.add_argument("--run_paraphrase", action="store_true", help="Enable paraphrasing (requires transformers+torch).")
     parser.add_argument("--run_translation", action="store_true", help="Enable round-trip translation (requires transformers+torch).")
 
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Device for Transformers models (auto uses CUDA if available).")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for Transformers inference.")
+    parser.add_argument("--paraphrase_max_len", type=int, default=128, help="Max length for paraphrasing generation.")
+    parser.add_argument("--paraphrase_beams", type=int, default=2, help="Beam size for paraphrasing generation.")
+    parser.add_argument("--translation_max_len", type=int, default=128, help="Max length for translation generation.")
+    parser.add_argument("--translation_beams", type=int, default=2, help="Beam size for translation generation.")
+    parser.add_argument("--no_fp16", action="store_true", help="Disable fp16 for Transformers on CUDA.")
+
     # Obfuscation options
     parser.add_argument("--no_lexical_remove", action="store_true")
     parser.add_argument("--no_high_weight_sub", action="store_true")
@@ -632,6 +463,10 @@ def main():
     args = parser.parse_args()
     set_seed(args.seed)
     ensure_out_dir(args.out_dir)
+
+    if not args.no_high_weight_sub:
+        require_wordnet()
+
 
     df = load_si_xlsx(args.data)
     df["text"] = df["text"].map(normalize_text)
@@ -735,17 +570,6 @@ def main():
             do_translation=False,
             seed=args.seed
         )
-        configs["combined_plus_paraphrase"] = ObfuscationConfig(
-            do_lexical_remove=not args.no_lexical_remove,
-            do_high_weight_sub=not args.no_high_weight_sub,
-            do_char_visual=not args.no_char_visual,
-            do_paraphrase=True,
-            do_translation=False,
-            homoglyph_rate=args.homoglyph_rate,
-            diacritic_rate=args.diacritic_rate,
-            seed=args.seed
-        )
-
     if args.run_translation:
         configs["translation_only"] = ObfuscationConfig(
             do_lexical_remove=False,
@@ -755,20 +579,21 @@ def main():
             do_translation=True,
             seed=args.seed
         )
-        configs["combined_plus_translation"] = ObfuscationConfig(
-            do_lexical_remove=not args.no_lexical_remove,
-            do_high_weight_sub=not args.no_high_weight_sub,
-            do_char_visual=not args.no_char_visual,
-            do_paraphrase=False,
-            do_translation=True,
-            homoglyph_rate=args.homoglyph_rate,
-            diacritic_rate=args.diacritic_rate,
-            seed=args.seed
-        )
-
     # Run obfuscations + evaluate
     for name, cfg in configs.items():
-        X_obf = apply_obfuscations(splits.X_test, cfg, sensitive_feats=sensitive_feats)
+        X_obf = apply_obfuscations(
+            splits.X_test,
+            cfg,
+            sensitive_feats=sensitive_feats,
+            device=args.device,
+            desc=name,
+            batch_size=args.batch_size,
+            paraphrase_max_len=args.paraphrase_max_len,
+            paraphrase_beams=args.paraphrase_beams,
+            translation_max_len=args.translation_max_len,
+            translation_beams=args.translation_beams,
+            fp16=not args.no_fp16
+        )
 
         # LR evaluation
         pred_lr, prob_lr = predict_logreg(lr_model, X_obf)
