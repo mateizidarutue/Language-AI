@@ -14,8 +14,6 @@ Project layout assumption:
     obfs/obfuscation_lexical.py
     obfs/obfuscation_high_weight.py
     obfs/obfuscation_char_visual.py
-    obfs/obfuscation_paraphrase.py
-    obfs/obfuscation_translation.py
 
 Tip: ensure `obfs/__init__.py` exists so imports work reliably.
 """
@@ -42,8 +40,6 @@ from sklearn.model_selection import train_test_split
 # -----------------------------
 from obfs.obfuscation_lexical import obfuscate_lexical_cue_removal
 from obfs.obfuscation_char_visual import viper
-from obfs.obfuscation_paraphrase import paraphrase_transformers_batch
-from obfs.obfuscation_translation import roundtrip_translate_transformers_batch
 from obfs.obfuscation_high_weight import obfuscate_high_weight_substitution, SubstitutionConfig
 
 
@@ -335,29 +331,6 @@ def build_obfuscation_registry(args, vec=None, lr=None) -> Dict[str, Callable[[L
         registry["chained_light"] = _light_chain
 
 
-    # --- Heavy methods are only registered if enabled ---
-    if args.enable_paraphrase:
-        registry["paraphrase"] = lambda X: paraphrase_transformers_batch(
-            X,
-            model_name=args.paraphrase_model,
-            max_len=args.paraphrase_max_len,
-            batch_size=args.paraphrase_batch,
-            num_beams=args.paraphrase_beams,
-            device=args.device,
-            fp16=not args.no_fp16,
-        )
-
-    if args.enable_translation:
-        registry["translation"] = lambda X: roundtrip_translate_transformers_batch(
-            X,
-            chain=[tuple(h.split("-")) for h in args.translation_chain.split(",")],
-            batch_size=args.translation_batch,
-            num_beams=args.translation_beams,
-            max_len=args.translation_max_len,
-            device=args.device,
-            fp16=not args.no_fp16,
-        )
-
     return registry
 
 
@@ -391,24 +364,6 @@ def parse_args():
 
     # high-weight substitution mode
     p.add_argument("--substitute_mode", default="synonym_only", choices=["synonym_only", "synonym_then_neutral", "neutral"])
-
-    # heavy methods toggles
-    p.add_argument("--enable_paraphrase", action="store_true")
-    p.add_argument("--enable_translation", action="store_true")
-    p.add_argument("--device", default="auto")
-    p.add_argument("--no_fp16", action="store_true")
-
-    # paraphrase params
-    p.add_argument("--paraphrase_model", default="Vamsi/T5_Paraphrase_Paws")
-    p.add_argument("--paraphrase_max_len", type=int, default=128)
-    p.add_argument("--paraphrase_batch", type=int, default=8)
-    p.add_argument("--paraphrase_beams", type=int, default=2)
-
-    # translation params
-    p.add_argument("--translation_chain", default="en-de,de-fr,fr-en", help="Comma hops like en-de,de-fr,fr-en")
-    p.add_argument("--translation_max_len", type=int, default=128)
-    p.add_argument("--translation_batch", type=int, default=16)
-    p.add_argument("--translation_beams", type=int, default=1)
 
     return p.parse_args()
 
@@ -460,16 +415,6 @@ def main():
         "obfuscations": {},
     }
 
-        # Resolve device
-    if args.device == "auto":
-        try:
-            import torch
-            args.device = "cuda" if torch.cuda.is_available() else "cpu"
-        except Exception:
-            args.device = "cpu"
-
-    print("Using device:", args.device)
-
     # Build registry AFTER training (so high_weight_sub can use LR)
     registry = build_obfuscation_registry(args, vec=vec, lr=lr)
 
@@ -486,7 +431,6 @@ def main():
         raise ValueError(
             f"Unknown/disabled obfuscations: {missing}\n"
             f"Available now: {sorted(registry.keys())}\n"
-            f"Tip: enable heavy ones with --enable_paraphrase / --enable_translation."
         )
 
     # Run each obfuscation and evaluate
