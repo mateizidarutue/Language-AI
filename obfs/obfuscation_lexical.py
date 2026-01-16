@@ -1,13 +1,4 @@
-"""
-Lexical cue removal obfuscation for GENDER prediction.
 
-This obfuscation targets *explicit gender leakage*:
-- self-identification (e.g. "I am a woman")
-- gendered roles (mother, husband, etc.)
-- honorifics (Mr, Mrs, Ms, etc.)
-
-It intentionally avoids deeper stylistic cues.
-"""
 
 import re
 from text_utils import WS_RE
@@ -15,7 +6,7 @@ from text_utils import WS_RE
 
 # -----------------------------
 # Gender leakage patterns
-# -----------------------------
+
 
 # Explicit gender words
 GENDER_WORDS = r"\b(woman|women|man|men|female|male|girl|boy|guy|gal)\b"

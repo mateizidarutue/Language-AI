@@ -1,21 +1,12 @@
 """
-S/I Stylometry + Adversarial Obfuscation (SOBR-style) — Runner Script
+Gender Stylometry + Adversarial Obfuscation
 
 Goal:
-- Train baseline models (Logistic Regression TF–IDF, fastText supervised) on the S/I slice dataset
+- Train baseline models (Logistic Regression, fastText supervised)
 - Evaluate on clean test data (no obfuscation)
-- Evaluate on test data with exactly one obfuscation at a time (or none)
-- Save all results in one results.json for easy comparison to SOBR
+- Evaluate on test data with exactly one obfuscation at a time, no obfuscations, or chained obfuscations
+- Save all results in one results.json
 
-Project layout assumption:
-- draft_script.py (this file) is in project root
-- text_utils.py is in project root
-- obfuscation modules are in: obfs/
-    obfs/obfuscation_lexical.py
-    obfs/obfuscation_high_weight.py
-    obfs/obfuscation_char_visual.py
-
-Tip: ensure `obfs/__init__.py` exists so imports work reliably.
 """
 
 from __future__ import annotations
@@ -36,8 +27,8 @@ from sklearn.model_selection import train_test_split
 
 
 # -----------------------------
-# Imports: obfuscations (kept external, not implemented here)
-# -----------------------------
+# Imports: obfuscations
+
 from obfs.obfuscation_lexical import obfuscate_lexical_cue_removal
 from obfs.obfuscation_char_visual import viper
 from obfs.obfuscation_high_weight import obfuscate_high_weight_substitution, SubstitutionConfig
@@ -45,7 +36,7 @@ from obfs.obfuscation_high_weight import obfuscate_high_weight_substitution, Sub
 
 # -----------------------------
 # fastText wrapper
-# -----------------------------
+
 class FastTextWrapper:
     def __init__(
         self,
@@ -94,7 +85,7 @@ class FastTextWrapper:
         confs = []
         for t in X:
             t = (t or "").replace("\n", " ").strip()
-            labels, probs = self.model.predict(t, k=1)  # IMPORTANT: pass a string, not [string]
+            labels, probs = self.model.predict(t, k=1)  
             lab = labels[0] if labels else "__label__0"
             prob = float(probs[0]) if probs else 0.0
             preds.append(int(lab.replace("__label__", "")))
@@ -104,7 +95,7 @@ class FastTextWrapper:
 
 # -----------------------------
 # Data loading
-# -----------------------------
+
 def load_dataset(path: str) -> pd.DataFrame:
     """
     Loads either .xlsx or .csv with at least:
@@ -153,12 +144,13 @@ def load_dataset(path: str) -> pd.DataFrame:
     out.columns = ["author_id", "text", "label"]
     out["author_id"] = out["author_id"].astype(str)
     out["text"] = out["text"].astype(str).fillna("")
+    
     # Convert female label safely
     out["label"] = pd.to_numeric(out["label"], errors="coerce")
     out = out.dropna(subset=["label"]).copy()
     out["label"] = out["label"].astype(int)
 
-    # Optional but recommended: ensure binary
+    # Ensure binary
     out = out[out["label"].isin([0, 1])].copy()
     return out
 
@@ -182,10 +174,8 @@ def author_level_split(
     """
     Author-level *stratified* split:
     - Authors are split into train/dev/test
-    - All slices from an author go to the same split (prevents leakage)
-    - Stratification preserves label distribution across splits
-
-    test_size and dev_size are fractions of the full dataset (by authors).
+    - All slices from an author go to the same split to prevent leakage
+    - test_size and dev_size are fractions of the full dataset (by authors).
     Default: 80/10/10.
     """
     # One label per author (assumption holds for gender / MBTI attributes)
@@ -198,7 +188,7 @@ def author_level_split(
     authors = author_df["author_id"].tolist()
     labels = author_df["label"].tolist()
 
-    # 1) Split off test authors (10%)
+    # 1) Split off test authors
     train_dev_auth, test_auth = train_test_split(
         authors,
         test_size=test_size,
@@ -207,10 +197,10 @@ def author_level_split(
     )
 
     # 2) Split train+dev into train and dev
-    # dev_size is fraction of total; relative to remaining (1 - test_size)
+   
     dev_frac_of_train_dev = dev_size / (1.0 - test_size)
 
-    # Get labels for train_dev authors for stratification
+    
     train_dev_author_df = author_df[author_df["author_id"].isin(train_dev_auth)]
     train_dev_labels = train_dev_author_df.set_index("author_id").loc[train_dev_auth, "label"].tolist()
 
@@ -235,7 +225,7 @@ def author_level_split(
 
 # -----------------------------
 # Models + evaluation
-# -----------------------------
+
 def train_logreg(X_train: List[str], y_train: List[int], seed: int = 42):
     vec = TfidfVectorizer(ngram_range=(1, 2), min_df=2, max_df=0.9)
     Xv = vec.fit_transform(X_train)
@@ -270,7 +260,7 @@ def _top_features_for_class(vec, lr, class_idx: int, top_k: int = 50) -> List[st
 
 # -----------------------------
 # Obfuscation registry
-# -----------------------------
+
 def identity(texts: List[str], **kwargs) -> List[str]:
     return texts
 
@@ -293,9 +283,9 @@ def build_obfuscation_registry(args, vec=None, lr=None) -> Dict[str, Callable[[L
                 p=args.viper_p,
                 ces=args.viper_ces,
                 k=args.viper_k,
-                seed=args.seed + i,  # deterministic but different per text
+                seed=args.seed + i,  
             )
-            # Only pass font_path when ICES is selected AND a path is provided
+            
             if args.viper_ces == "ICES" and getattr(args, "viper_font_path", ""):
                 kw["font_path"] = args.viper_font_path
             out.append(viper(t, **kw))
@@ -337,7 +327,7 @@ def build_obfuscation_registry(args, vec=None, lr=None) -> Dict[str, Callable[[L
 
 # -----------------------------
 # Runner
-# -----------------------------
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data", required=True, help="Path to gender.xlsx (or .csv)")
@@ -350,10 +340,6 @@ def parse_args():
                help="Author-level dev fraction (default 0.10)")
 
 
-    # Which obfuscations to run:
-    #   all  -> run everything available
-    #   none -> only baseline / identity
-    #   comma list -> e.g. none,lexical_remove,char_visual,chained_light
     p.add_argument("--obfuscations", default="all")
 
     # VIPER params

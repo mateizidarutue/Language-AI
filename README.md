@@ -1,61 +1,78 @@
 # Language-AI
 
-This repo trains and evaluates two stylometry classifiers (TF-IDF + Logistic Regression and fastText) and measures how much three light obfuscations degrade performance. The main runner is `draft_script_clean.py`, and the sample dataset is `gender.xlsx` in the repo root.
+This repo trains two stylometry classifiers (TF-IDF + Logistic Regression and fastText) and evaluates how text obfuscations affect performance. The main entrypoint is `draft_script_clean.py`.
 
-## Pipeline Overview
+## What the script does
 
-1) Data loading and normalization
-- Reads an `.xlsx` or `.csv` file via `--data`.
-- Finds the author column (`author_id` or similar), the text column (`text`/`post`/`body`), and the label column (`female`/`label`/`y`).
-- Coerces labels to integers, drops missing labels, and filters to binary labels {0, 1}.
-- Casts all text to strings and fills missing text with empty strings.
+- Load a dataset from `.xlsx` or `.csv` and normalizes columns.
+- Split by author to prevent leakage (default 80/10/10 train/dev/test).
+- Train two baselines (Logistic Regression and fastText).
+- Evaluate on clean test data.
+- Optionally evaluate on obfuscated test data and write a single `results.json`.
 
-2) Author-level split
-- Splits by author to prevent leakage so an author’s posts never appear in more than one split.
-- Default split is 80/10/10 (train/dev/test) with stratification on the author label.
+## Data format
 
-3) Baseline training
-- Trains a TF-IDF + Logistic Regression model on the training split.
-- Trains a fastText supervised model on the training split.
+Expected columns (case-insensitive):
+- Author: `author_id` (or any column that contains "author")
+- Text: `text`, `post`, or `body`
+- Label: `female`, `label`, or `y` (binary 0/1)
 
-4) Baseline evaluation
-- Evaluates both models on the clean test set.
-- Stores accuracy, macro-F1, and per-class reports in the results structure.
+The zip includes `gender.xlsx` as a sample dataset.
 
-5) Obfuscation registry
-The script builds a registry of obfuscation functions, each taking a list of texts and returning a list of obfuscated texts. The three light perturbations are:
-- `lexical_remove`: removes lexical cue words via `obfs/obfuscation_lexical.py`.
-- `char_visual`: character/visual perturbations using VIPER via `obfs/obfuscation_char_visual.py` with per-text deterministic seeding.
-- `high_weight_sub`: substitutes high-weight features using the trained LR model and TF-IDF vectorizer via `obfs/obfuscation_high_weight.py`. This is only registered after training because it depends on the trained model.
-- `chained_light`: applies `lexical_remove` → `char_visual` → `high_weight_sub` in sequence. This is a stronger, combined version of the three light perturbations.
+## Obfuscations
 
-6) Obfuscation evaluation
-- For each requested obfuscation name, the script:
-  - Obfuscates the test texts.
-  - Evaluates both models on the obfuscated texts.
-  - Stores metrics under `results["obfuscations"][name]`.
+These are registered in `draft_script_clean.py`:
+- `none`: no changes (identity transform).
+- `lexical_remove`: removes explicit gender cues (`obfs/obfuscation_lexical.py`).
+- `char_visual`: VIPER-style character perturbations (`obfs/obfuscation_char_visual.py`).
+- `high_weight_sub`: substitutes high-weight LR features using synonyms or masked LM candidates (`obfs/obfuscation_high_weight.py`).
+- `chained_light`: `lexical_remove` -> `char_visual` -> `high_weight_sub`.
 
-7) Results output
-- Writes a single JSON file to `--out_dir` (default `results_si/results.json`).
-- Includes baseline metrics, per-obfuscation metrics, and metadata about the run.
+Notes:
+- `high_weight_sub` is only available after the LR model is trained (the script handles this).
+- If you want to avoid transformers, use `--substitute_mode synonym_only` so only WordNet synonyms are used.
 
-## Data
+## Install
 
-The repo includes `gender.xlsx`, which is the default dataset you can point to with `--data`. The script accepts any dataset with the required columns as described above.
+```bash
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+
 
 ## Usage
 
-Run all available obfuscations:
+0 obfuscations (baseline only). The script always computes a clean baseline; `none` just records the identity transform:
 ```bash
-python draft_script_clean.py --data gender.xlsx --out_dir results_si --obfuscations all
+python draft_script_clean.py --data gender.xlsx --out_dir results_si --obfuscations none
 ```
 
-Run only the chained light perturbation:
+One obfuscation at a time:
+```bash
+python draft_script_clean.py --data gender.xlsx --out_dir results_si --obfuscations lexical_remove
+python draft_script_clean.py --data gender.xlsx --out_dir results_si --obfuscations char_visual
+python draft_script_clean.py --data gender.xlsx --out_dir results_si --obfuscations high_weight_sub
+```
+
+All three chained:
 ```bash
 python draft_script_clean.py --data gender.xlsx --out_dir results_si --obfuscations chained_light
 ```
 
-Run a custom subset:
-```bash
-python draft_script_clean.py --data gender.xlsx --out_dir results_si --obfuscations lexical_remove,char_visual,high_weight_sub
-```
+
+## Output
+
+- Results are written to `results.json` inside `--out_dir`.
+- The JSON includes baseline metrics and per-obfuscation metrics for both models.
+
+## Common options
+
+- `--data`: path to dataset
+- `--out_dir`: output directory (default `results_si`)
+- `--obfuscations`: comma-separated list or `all`
+- `--seed`: random seed
+- `--test_size`, `--dev_size`: author-level split fractions
+- `--viper_p`, `--viper_ces`, `--viper_k`, `--viper_font_path`: VIPER settings
+- `--substitute_mode`: use `synonym_only` to disable masked LM candidates; other values currently behave like the default mix

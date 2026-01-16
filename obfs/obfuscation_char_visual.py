@@ -32,8 +32,7 @@ except Exception:
 
 # -----------------------------
 # ECES: minimal perturbations (one or few neighbors)
-# -----------------------------
-# Keep this small and readable: “minimal perturbance with maximal impact” (paper’s ECES idea)
+
 _ECES: Dict[str, List[str]] = {
     # lowercase
     "a": ["á", "à", "â", "ä", "ã", "å"],
@@ -46,7 +45,7 @@ _ECES: Dict[str, List[str]] = {
     "y": ["ý", "ÿ"],
     "s": ["ś", "š"],
     "z": ["ź", "ž"],
-    # uppercase (mirror the same idea)
+    # uppercase 
     "A": ["Á", "À", "Â", "Ä", "Ã", "Å"],
     "C": ["Ç", "Ć", "Č"],
     "E": ["É", "È", "Ê", "Ë"],
@@ -62,7 +61,7 @@ _ECES: Dict[str, List[str]] = {
 
 # -----------------------------
 # DCES: Unicode-name-based neighbors
-# -----------------------------
+
 def _unicode_name(ch: str) -> str:
     try:
         return unicodedata.name(ch)
@@ -79,18 +78,16 @@ def _dces_neighbors_for_letter(letter: str) -> List[str]:
     name = _unicode_name(letter)
     if not name:
         return []
-    # Example: "LATIN SMALL LETTER A"
-    # We match all "LATIN SMALL LETTER A WITH ..."
+    
     base = name
     if " WITH " in base:
         base = base.split(" WITH ")[0]
 
-    # Search in a limited Unicode range for performance.
-    # Latin Extended blocks mostly live in these ranges.
+    
     ranges = [
-        (0x00C0, 0x017F),  # Latin-1 Supplement + Latin Extended-A
-        (0x0180, 0x024F),  # Latin Extended-B
-        (0x1E00, 0x1EFF),  # Latin Extended Additional
+        (0x00C0, 0x017F),  
+        (0x0180, 0x024F),  
+        (0x1E00, 0x1EFF),  
     ]
     out = []
     for lo, hi in ranges:
@@ -121,12 +118,12 @@ def _dces_table() -> Dict[str, List[str]]:
 
 # -----------------------------
 # ICES: image-based vector space neighbors (24x24 bitmap -> 576-dim)
-# -----------------------------
+
 @dataclass(frozen=True)
 class ICESConfig:
     size: int = 24
-    font_size: int = 20  # fits 24x24 reasonably
-    # If you want to use a specific TTF, set font_path; otherwise PIL default font is used.
+    font_size: int = 20  
+    
     font_path: Optional[str] = None
 
 
@@ -153,23 +150,20 @@ def _render_char_to_vec(ch: str, cfg: ICESConfig) -> np.ndarray:
     else:
         font = ImageFont.load_default()
 
-    # Center the glyph
+    
     bbox = draw.textbbox((0, 0), ch, font=font)
     w = bbox[2] - bbox[0]
     h = bbox[3] - bbox[1]
     x = (cfg.size - w) // 2
     y = (cfg.size - h) // 2
-    draw.text((x, y), ch, fill=0, font=font)  # black glyph
+    draw.text((x, y), ch, fill=0, font=font)  
 
     arr = np.asarray(img, dtype=np.float32) / 255.0
-    return arr.reshape(-1)  # 576-dim for 24x24
+    return arr.reshape(-1)  
 
 
 def _candidate_chars_for_ices() -> List[str]:
-    """
-    Keep this candidate set realistic and not huge.
-    Use Latin + Latin Extended + a small homoglyph-ish set.
-    """
+    
     chars = []
 
     # Basic ASCII letters/digits/punct
@@ -206,19 +200,18 @@ def _ices_neighbors_table(cfg: ICESConfig, k: int = 20) -> Dict[str, List[Tuple[
 
     table: Dict[str, List[Tuple[str, float]]] = {}
 
-    # Precompute dot products row-by-row (OK for moderate cand size)
-    # If this ever gets slow, we can restrict cand further or approximate.
+    
     for i, c in enumerate(cand):
         sims = vecs_n @ vecs_n[i]  # cosine similarity
         # exclude itself
         sims[i] = -1.0
         # take top-k most similar
         idx = np.argpartition(-sims, kth=min(k, len(cand)-1)-1)[:k]
-        # sort those
+        
         idx = idx[np.argsort(-sims[idx])]
         neighbors = []
         for j in idx:
-            # cosine distance = 1 - cosine similarity
+            # cosine distance
             dist = float(1.0 - sims[j])
             neighbors.append((cand[j], dist))
         table[c] = neighbors
@@ -227,21 +220,15 @@ def _ices_neighbors_table(cfg: ICESConfig, k: int = 20) -> Dict[str, List[Tuple[
 
 
 def _sample_neighbor_weighted(rng: random.Random, neighbors: List[Tuple[str, float]]) -> str:
-    """
-    VIPER samples among neighbors, optionally proportional to distance (paper: proportional to distance).
-    Distance-proportional makes farther neighbors more likely (stronger).
-    We'll do inverse-distance weighting by default for "nearest emphasis" unless you want the stronger version.
-    """
+    
     if not neighbors:
         return ""
 
     dists = np.array([max(d, 1e-6) for _, d in neighbors], dtype=np.float64)
 
-    # Choose ONE:
-    # 1) nearest-emphasis (more human-readable):
+    
     weights = 1.0 / dists
-    # 2) distance-proportional (stronger, as mentioned in the paper):
-    # weights = dists
+    
 
     weights = weights / weights.sum()
     pick = rng.choices(range(len(neighbors)), weights=weights.tolist(), k=1)[0]
@@ -250,7 +237,7 @@ def _sample_neighbor_weighted(rng: random.Random, neighbors: List[Tuple[str, flo
 
 # -----------------------------
 # Public API
-# -----------------------------
+
 def viper(
     text: str,
     p: float = 0.2,

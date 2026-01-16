@@ -1,4 +1,4 @@
-# obfuscation_high_weight.py
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,13 +11,13 @@ import hashlib
 
 import numpy as np
 
-from text_utils import WS_RE  # your existing whitespace regex
+from text_utils import WS_RE  
 
 
 # -----------------------------
 # Basic tokenization helpers
-# -----------------------------
-WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]{1,}")  # conservative "word" tokens
+
+WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]{1,}")  
 MASK_TOKEN = "[MASK]"
 
 
@@ -30,9 +30,7 @@ def simple_tokenize(text: str) -> List[str]:
 
 
 def _replace_nth_word(text: str, word: str, n: int, repl: str) -> str:
-    """
-    Replace the nth occurrence of `word` (case-insensitive, word-boundary) with `repl`.
-    """
+    
     pattern = re.compile(rf"\b{re.escape(word)}\b", flags=re.IGNORECASE)
     i = 0
 
@@ -61,7 +59,7 @@ def _all_word_positions(tokens: List[str]) -> Dict[str, List[int]]:
 
 # -----------------------------
 # POS tagging (optional)
-# -----------------------------
+
 def _pos_tag(tokens: List[str]) -> List[Tuple[str, str]]:
     """
     Best-effort POS tags. Uses spaCy if available (better), else NLTK.
@@ -70,8 +68,8 @@ def _pos_tag(tokens: List[str]) -> List[Tuple[str, str]]:
     # spaCy preferred (more consistent tags)
     try:
         import spacy
-        # you might already have spacy installed; model may or may not be
-        # available; try small english
+        
+        
         try:
             nlp = spacy.load("en_core_web_sm", disable=["ner", "parser"])
         except Exception:
@@ -85,7 +83,7 @@ def _pos_tag(tokens: List[str]) -> List[Tuple[str, str]]:
             import nltk
             from nltk import pos_tag
         except Exception:
-            # no POS available
+            
             return [(t, "") for t in tokens]
         try:
             return [(w, p) for w, p in pos_tag(tokens)]
@@ -106,19 +104,16 @@ def _pos_compatible(pos_a: str, pos_b: str) -> bool:
 
 # -----------------------------
 # Substitute model interface (LR + vectorizer)
-# -----------------------------
+
 def _lr_logit_for_label(lr_model, X, label_index: int) -> float:
     """
     Return logit-like score for a class.
     Works for binary LR (decision_function -> 1 value).
     """
-    # scikit-learn LR:
-    # - binary: decision_function returns shape (n_samples,)
-    # - multi: decision_function returns (n_samples, n_classes)
+    
     s = lr_model.decision_function(X)
     if s.ndim == 1:
-        # binary: positive class is classes_[1]
-        # map label_index to + or -
+        
         if label_index == 1:
             return float(s[0])
         else:
@@ -127,10 +122,7 @@ def _lr_logit_for_label(lr_model, X, label_index: int) -> float:
 
 
 def _predict_label_and_conf(lr_model, X) -> Tuple[int, float]:
-    """
-    Returns (predicted_label_index, confidence_for_pred_label).
-    Confidence is probability if available.
-    """
+    
     if hasattr(lr_model, "predict_proba"):
         proba = lr_model.predict_proba(X)[0]
         pred = int(np.argmax(proba))
@@ -151,8 +143,8 @@ def _predict_label_and_conf(lr_model, X) -> Tuple[int, float]:
 
 
 # -----------------------------
-# Importance scoring (paper-inspired)
-# -----------------------------
+# Importance scoring 
+
 def _omission_importance(
     text: str,
     tokens: List[str],
@@ -179,7 +171,7 @@ def _omission_importance(
         t2 = _replace_nth_word(text, w, 1, "")
         X2 = vectorizer.transform([t2])
         s2 = _lr_logit_for_label(lr_model, X2, target_label_index)
-        # positive importance means: removing w lowers target score (good target to attack)
+        
         imp = base - s2
         scored.append((w, float(imp)))
 
@@ -189,7 +181,7 @@ def _omission_importance(
 
 # -----------------------------
 # Candidate generation
-# -----------------------------
+
 def try_wordnet_synonyms(token: str, max_cands: int = 10) -> List[str]:
     """
     WordNet synonyms (baseline "WS" style).
@@ -336,7 +328,7 @@ def dropout_bert_candidates(
 
 # -----------------------------
 # Semantic preservation (optional)
-# -----------------------------
+
 def _sent_embedder(name: str = "sentence-transformers/all-MiniLM-L6-v2"):
     try:
         from sentence_transformers import SentenceTransformer
@@ -352,7 +344,7 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 # -----------------------------
 # Cache for candidate generation
-# -----------------------------
+
 class _SqlCache:
     """
     Cache expensive candidate generation calls:
@@ -407,7 +399,7 @@ class _SqlCache:
 
 # -----------------------------
 # Configuration
-# -----------------------------
+
 @dataclass
 class SubstitutionConfig:
     max_targets: int = 30         # how many important words to try
@@ -431,8 +423,8 @@ class SubstitutionConfig:
 
 
 # -----------------------------
-# Main attack (TextFooler-inspired loop)
-# -----------------------------
+# Main attack 
+
 def obfuscate_high_weight_substitution(
     text: str,
     lr_model,
@@ -443,18 +435,13 @@ def obfuscate_high_weight_substitution(
     """
     Paper-inspired lexical substitution attack for stylometric obfuscation :contentReference[oaicite:6]{index=6}.
 
-    High-level loop (Algorithm 1 spirit):
+    High-level loop:
       1) Rank words by importance using omission-style score (substitute model).
       2) For each important word:
            a) generate candidate replacements (WordNet / Masked BERT / Dropout BERT)
            b) optional POS + semantic similarity filtering
            c) pick replacement that most reduces target-label confidence/logit
       3) apply iteratively until prediction changes or budget exhausted.
-
-    Inputs:
-      - text: a slice (long Reddit text)
-      - lr_model + vectorizer: your substitute model pipeline
-      - target_label: the label you want to obfuscate away from (e.g., the predicted class)
 
     Returns:
       - obfuscated text
@@ -468,7 +455,7 @@ def obfuscate_high_weight_substitution(
     # Prepare cache for expensive candidate generation
     cache = _SqlCache(cfg.cache_path)
 
-    # Tokenize + POS tags (on initial)
+    # Tokenize + POS tags 
     tokens = simple_tokenize(t)
     if not tokens:
         cache.close()
@@ -514,7 +501,7 @@ def obfuscate_high_weight_substitution(
         if not occurrences:
             continue
 
-        # We try one occurrence at a time (first occurrence is often enough, faster)
+        # Try one occurrence at a time 
         occ = occurrences[0]
 
         # Candidate generation
@@ -556,7 +543,7 @@ def obfuscate_high_weight_substitution(
                     cached = db
                 candidates.extend(cached)
 
-        # Deduplicate, keep order
+        
         seen = set()
         uniq_cands = []
         for c in candidates:
@@ -573,7 +560,7 @@ def obfuscate_high_weight_substitution(
         if not uniq_cands:
             continue
 
-        # Filter candidates by POS tag compatibility (paper suggests POS-based checks) :contentReference[oaicite:7]{index=7}
+        # Filter candidates by POS tag compatibility
         if cfg.require_pos_match:
             pos_w = pos_tags.get(w, "")
             filtered = []
@@ -587,14 +574,14 @@ def obfuscate_high_weight_substitution(
 
         # Evaluate each candidate by how much it reduces target label logit/prob
         best_text = None
-        best_score = None  # lower is better (target score)
+        best_score = None  
         best_candidate = None
 
         for c in uniq_cands:
             # Apply substitution at the selected occurrence
             trial = _replace_nth_word(current, w, occ, c)
 
-            # Optional semantic doc-level similarity filter (fast enough for small candidate lists)
+            # Optional semantic doc-level similarity filter 
             if cfg.use_semantic_filter and embedder is not None and base_emb is not None:
                 emb = embedder.encode([trial], normalize_embeddings=True)[0]
                 sim = float(np.dot(base_emb, emb))
@@ -612,7 +599,7 @@ def obfuscate_high_weight_substitution(
         if best_text is None:
             continue
 
-        # Apply best change if it helps
+        # Apply best change if it reduces target label score
         before_X = vectorizer.transform([current])
         before_score = _lr_logit_for_label(lr_model, before_X, target_label)
 
